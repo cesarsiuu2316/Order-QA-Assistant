@@ -202,7 +202,7 @@ def create_multimodal_message(query, retrieved_docs, image_data_store):
 def multimodal_pdf_rag_pipeline(query, vector_store, image_data_store, llm, clip_processor, clip_model):
     """Main pipeline for multimodal RAG."""
     # Retrieve relevant documents
-    context_docs = retrieve_multimodal(query, vector_store, clip_processor, clip_model, k=2)
+    context_docs = retrieve_multimodal(query, vector_store, clip_processor, clip_model, k=5)
 
     # Create multimodal message
     message = create_multimodal_message(query, context_docs, image_data_store)
