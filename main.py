@@ -5,9 +5,9 @@ from PIL import Image
 import torch
 import numpy as np
 from langchain.chat_models import init_chat_model
-from langchain.prompts import PromptTemplate
+# from langchain.prompts import PromptTemplate
 from langchain.schema.messages import HumanMessage
-from sklearn.metrics.pairwise import cosine_similarity
+# from sklearn.metrics.pairwise import cosine_similarity
 import base64
 import io
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -103,7 +103,7 @@ def process_pdf_document(pdf_path, clip_processor, clip_model):
                 # Create unique identifier
                 image_id = f"page_{i}_img_{img_index}"
 
-                # Store image as base64 for later use with GPT-4V
+                # Store image as base64 for later use with the LLM
                 buffered = io.BytesIO()
                 pil_image.save(buffered, format="PNG")
                 img_base64 = base64.b64encode(buffered.getvalue()).decode()
@@ -139,7 +139,7 @@ def create_vector_store(docs, embeddings):
     return vector_store
 
 
-def retrieve_multimodal(query, vector_store, clip_processor, clip_model, k=5):
+def retrieve_multimodal(query, vector_store, clip_processor, clip_model, k=2):
     """Unified retrieval using CLIP embeddings for both text and images."""
     # Embed query using CLIP
     query_embedding = embed_text(query, clip_processor, clip_model)
@@ -193,7 +193,7 @@ def create_multimodal_message(query, retrieved_docs, image_data_store):
     # Add instruction
     content.append({
         "type": "text",
-        "text": "\n\nPor favor, responde la pregunta del cliente basándote en las descripciones e imágenes del menú proporcionadas. Si preguntan cómo se ve un plato o qué contiene, describe la imagen."
+        "text": "\n\nPor favor, responde la pregunta del cliente basándote en las descripciones, precios e imágenes del menú proporcionadas. Si preguntan cómo se ve un plato o qué contiene, describe la imagen."
     })
 
     return HumanMessage(content=content)
@@ -210,6 +210,15 @@ def multimodal_pdf_rag_pipeline(query, vector_store, image_data_store, llm, clip
     # Get response from model
     response = llm.invoke([message])
 
+    # Find the most relevant image from context to display
+    image_to_display = None
+    for doc in context_docs:
+        if doc.metadata.get("type") == "image":
+            image_id = doc.metadata.get("image_id")
+            if image_id in image_data_store:
+                image_to_display = image_data_store[image_id]
+                break  # Display the first (most relevant) image found
+
     # Print retrieved context info
     with st.expander("Contexto recuperado"):
         st.write(f"Se recuperaron {len(context_docs)} documentos:")
@@ -222,7 +231,7 @@ def multimodal_pdf_rag_pipeline(query, vector_store, image_data_store, llm, clip
             else:
                 st.write(f"  - Imagen de la página {page}")
 
-    return response.content
+    return response.content, image_to_display
 
 
 @st.cache_resource
@@ -235,7 +244,6 @@ def load_data(pdf_path, _clip_processor, _clip_model):
 
 def main():
     st.title("Asistente de Restaurante 🍽️")
-    st.write("¡Bienvenido! Pregúntame cualquier cosa sobre nuestro menú.")
 
     # Initialize models
     clip_model, clip_processor = initialize_clip_model()
@@ -245,14 +253,40 @@ def main():
     pdf_path = "menu.pdf"
     vector_store, image_data_store = load_data(pdf_path, clip_processor, clip_model)
 
-    # User input
-    query = st.text_input("¿Qué te gustaría saber?", placeholder="Ej: ¿Qué ingredientes tiene el salmón?")
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = [{"role": "assistant", "content": "¡Bienvenido! Pregúntame cualquier cosa sobre nuestro menú."}]
 
-    if query:
-        with st.spinner("Buscando la mejor respuesta..."):
-            answer = multimodal_pdf_rag_pipeline(query, vector_store, image_data_store, llm, clip_processor, clip_model)
-            st.write("### Respuesta:")
-            st.write(answer)
+    # Display chat messages from history
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            if isinstance(message["content"], dict):
+                st.markdown(message["content"]["text"])
+                if "image" in message["content"] and message["content"]["image"]:
+                    st.image(io.BytesIO(base64.b64decode(message["content"]["image"])))
+            else:
+                st.markdown(message["content"])
+
+    # React to user input
+    if query := st.chat_input("¿Qué te gustaría saber?"):
+        # Display user message in chat message container
+        st.session_state.messages.append({"role": "user", "content": query})
+        with st.chat_message("user"):
+            st.markdown(query)
+
+        # Display assistant response in chat message container
+        with st.chat_message("assistant"):
+            with st.spinner("Buscando la mejor respuesta..."):
+                answer, image_base64 = multimodal_pdf_rag_pipeline(query, vector_store, image_data_store, llm, clip_processor, clip_model)
+                st.markdown(answer)
+                if image_base64:
+                    st.image(io.BytesIO(base64.b64decode(image_base64)))
+
+        # Add assistant response to chat history
+        response_content = {"text": answer}
+        if image_base64:
+            response_content["image"] = image_base64
+        st.session_state.messages.append({"role": "assistant", "content": response_content})
 
 
 if __name__ == "__main__":
